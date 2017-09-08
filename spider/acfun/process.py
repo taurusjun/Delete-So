@@ -27,7 +27,8 @@ ACFUN的入口函数在这里。
     logging.basicConfig(level=logging.WARNING,
         format='%(asctime)s %(filename)s[line:%(lineno)d] %(levelname)s %(message)s',
         datefmt='%a, %d %b %Y %H:%M:%S',
-        filename='/var/log/acmore.log',
+        # filename='/var/log/acmore.log',
+        filename='run/log/acmore.log',
         filemode='a')
         
     def work(self, ac_comments):
@@ -44,7 +45,8 @@ ACFUN的入口函数在这里。
             analyse_data = self.parse(parse_data)
             
             #使用map进行多线程分析每篇投稿的评论
-            pool = ThreadPool(16) 
+            # pool = ThreadPool(1)
+            pool = ThreadPool(16)
             insert_data = pool.map(self.analyse, analyse_data) #这里的输出为ACComments结构体的数组
             pool.close()
             pool.join()
@@ -61,7 +63,7 @@ ACFUN的入口函数在这里。
             logging.warn('lru length: ' + str(self.ac_comments.lru.size))
                    
         except Exception as e:
-            logging.error(str(e))
+            logging.error(e.message)
                 
     def get_parse_data(self, urlContent):
         parse_data = []
@@ -118,57 +120,9 @@ ACFUN的入口函数在这里。
                 #max_id这个字段用来查询更多的投稿，比如我从首页获取的最大投稿是ac190000，那么一会我会多抓去ac188900到ac190000的评论信息
                 if max_id < int(data[0][5:]):
                     max_id = int(data[0][5:])
-                    
-                #到了解析title的时候了，A站的title写的很不规范，以下是我们需要分析的几种情况
-                #情况1 什么都有，开工的时候要注意标题后面的两种冒号： title="标题: 抗战烽火孕育新中国国歌 《义勇军进行曲》唱响世界80年&#13;UP主: 亡是公&#13;发布于 2015-05-24 20:22:26 / 点击数: 2602 / 评论数: 96"
-                #情况2 没有UP主，就一个更新时间，这种数据常见于番剧： title="标题：【四月】幻界战线 &#13;更新至：第8集 &#13;更新于：2015年05月24日"
-                #情况3 这下更牛B，连更新时间都不需要了，一般是推荐 ： title="全明星热唱happy" 
-                #情况4 还有这种有标题但没有UP主的                  ： title="标题: 我爱你 中国（A站爱国兔子合集）"
-                
-                #先过滤掉前面几个字
-                data[1] = data[1][7:]
-                
-                #先排除情况3
-                now = data[1].find('标题')
-                if now == -1:
-                    row.set_title(data[1][:len(data[1])-1].strip())
-                    #然后开始疯狂捏造数据
-                    row.set_up("UP主不详")
-                    row.set_post_time("1992-06-17 01:02:03")
-                else:
-                    data[1] = data[1][3:]
-                    #然后排除情况2
-                    now = data[1].find('更新于')
-                    if now != -1:
-                        now = data[1].find('&#13;')
-                        #获取title
-                        row.set_title(data[1][:now].strip())
-                        #然后也开始疯狂捏造数据
-                        row.set_up("UP主不详")
-                        row.set_post_time("1992-06-17 01:02:03")
-                    else:
-                        now = data[1].find('&#13;')
-                        if now != -1:
-                            #接着处理情况1
-                            #获取title
-                            row.set_title(data[1][:now].strip())
-                            data[1] = data[1][now+1:]
-                            
-                            #获取UP主
-                            now = data[1].find('&#13;')
-                            row.set_up(data[1][9:now])
-                            data[1] = data[1][now+1:]
-                            
-                            #获取投稿时间
-                            now = data[1].find(' / ')
-                            row.set_post_time(data[1][8:now])
-                        else:
-                            #最后是情况4
-                            row.set_title(data[1][:len(data[1])-1].strip())
-                            #然后开始疯狂捏造数据
-                            row.set_up("UP主不详")
-                            row.set_post_time("1992-06-17 01:02:03")
-                    
+
+                self.parseTitleText(row,data[1]);
+
             except Exception:
                 continue
                 
@@ -180,6 +134,115 @@ ACFUN的入口函数在这里。
         self.ac_comments.db_proc.ACCommentsInfo.insert(rows)
            
         return list(set(rows))
+
+    '''
+          标题文本解析
+          row是要返回的，data是输入的标题文本
+    '''
+    def parseTitleText(self,row, txt):
+        # 2017／09／07 更新：分析了目前title的格式，基本是是 XXXXX &#13 YYYYY &#13 加时间戳
+        # 因此更新了解析逻辑
+
+        # 以下3个字段是需要更新到row里面的默认值
+        title = "No title"
+        author = "unknown"
+        post_time = "1888-06-17 01:02:03"
+
+        # 先过滤掉前面几个字
+        wholeTxt = txt[7:]
+
+        spliter0 = '&#13;'
+        spliterUp = 'UP:'
+
+        split0Idx = wholeTxt.find(spliter0)
+        if split0Idx !=-1: # 找到第一个标记'&#13;"的起始位置, 如果未找到，说明是单标题
+            # 找到第二个标记'&#13;"的起始位置
+            split1Idx = wholeTxt.find(spliter0, split0Idx+len(spliter0))
+            title = wholeTxt[:split0Idx].strip();
+            if split1Idx != -1: # 如果找到两个标记，则取中间这一段字符串进行处理
+                # 取出中间一段string
+                str2 = wholeTxt[split0Idx+1:split1Idx]
+                # 找UP标记
+                upIndx = str2.find(spliterUp);
+                if  upIndx != -1: # 找到UP标记，则取UP主名, 没找到UP标记，说明是其他内容
+                    author = str2[upIndx+len(spliterUp):]
+                # 取剩余的字符串
+                str3 = wholeTxt[split1Idx+len(spliter0):]
+            else:
+                str3 = wholeTxt[split0Idx+len(spliter0):]
+
+            # 标题中的时间格式是 2017-09-07 18:38:26，使用正则表达式来抽取
+            # dtPattern = re.compile(r'''
+            #     ([1-2][0-9][0-9][0-9]-[0-1][1-9]-[0-3][0-9] [0-2][0-9]:[0-5][0-9])
+            #     ''', re.VERBOSE)
+            match =re.search(r'([1-2][0-9][0-9][0-9]-[0-1][1-9]-[0-3][0-9] [0-2][0-9]:[0-5][0-9])',str3)
+            post_time = match.group(1)
+        else:
+            title = wholeTxt[:len(wholeTxt) - 1].strip();
+
+        titleSymble = u'标题: '
+        titleIdx = title.find(titleSymble)
+        if titleIdx != -1:
+            title = title[titleIdx+len(titleSymble):]
+        row.set_title(title)
+        row.set_up(author)
+        row.set_post_time(post_time)
+
+    '''
+          标题文本解析
+          row是要返回的，data是输入的标题文本
+    '''
+    def oldParseTitleText(self,row, data):
+        # 到了解析title的时候了，A站的title写的很不规范，以下是我们需要分析的几种情况
+        # 情况1 什么都有，开工的时候要注意标题后面的两种冒号： title="标题: 抗战烽火孕育新中国国歌 《义勇军进行曲》唱响世界80年&#13;UP主: 亡是公&#13;发布于 2015-05-24 20:22:26 / 点击数: 2602 / 评论数: 96"
+        # 情况2 没有UP主，就一个更新时间，这种数据常见于番剧： title="标题：【四月】幻界战线 &#13;更新至：第8集 &#13;更新于：2015年05月24日"
+        # 情况3 这下更牛B，连更新时间都不需要了，一般是推荐 ： title="全明星热唱happy"
+        # 情况4 还有这种有标题但没有UP主的                  ： title="标题: 我爱你 中国（A站爱国兔子合集）"
+
+        # 先过滤掉前面几个字
+        data[1] = data[1][7:]
+
+        # 先排除情况3
+        now = data[1].find('标题')
+        if now == -1:
+            row.set_title(data[1][:len(data[1]) - 1].strip())
+            # 然后开始疯狂捏造数据
+            row.set_up("UP主不详")
+            row.set_post_time("1992-06-17 01:02:03")
+        else:
+            data[1] = data[1][3:]
+            # 然后排除情况2
+            now = data[1].find('更新于')
+            if now != -1:
+                now = data[1].find('&#13;')
+                # 获取title
+                row.set_title(data[1][:now].strip())
+                # 然后也开始疯狂捏造数据
+                row.set_up("UP主不详")
+                row.set_post_time("1992-06-17 01:02:03")
+            else:
+                now = data[1].find('&#13;')
+                if now != -1:
+                    # 接着处理情况1
+                    # 获取title
+                    row.set_title(data[1][:now].strip())
+                    data[1] = data[1][now + 1:]
+
+                    # 获取UP主
+                    now = data[1].find('&#13;')
+                    row.set_up(data[1][9:now])
+                    data[1] = data[1][now + 1:]
+
+                    # 获取投稿时间
+                    now = data[1].find(' / ')
+                    row.set_post_time(data[1][8:now])
+                else:
+                    # 最后是情况4
+                    row.set_title(data[1][:len(data[1]) - 1].strip())
+                    # 然后开始疯狂捏造数据
+                    row.set_up("UP主不详")
+                    row.set_post_time("1992-06-17 01:02:03")
+
     '''
           数据结构约定：
           rows[row[评论cid, 评论内容, 评论人用户名, 引用评论cid, 该评论楼层数, 投稿URL, 删除标志, 司机标志, 时间戳], row, row...]
@@ -208,10 +271,12 @@ ACFUN的入口函数在这里。
         
         #番剧的id小于0
         try:
-            if acid > 0:
-                json_data = j_obj["commentContentArr"]
-            else:
-                json_data = j_obj['data']["commentContentArr"]
+            # if acid > 0:
+            #     json_data = j_obj["commentContentArr"]
+            # else:
+            #     json_data = j_obj['data']["commentContentArr"]
+            # 2017／09／07 目前统一采用了如下结构
+            json_data = j_obj['data']["commentContentArr"]
         except:
             logging.error("commentContentArr is not exist")
             return
@@ -245,8 +310,8 @@ ACFUN的入口函数在这里。
                     logging.error("over 3000, drop it.")
                     break
                 
-        except Exception:
-            logging.error("commentContentArr is not exist")
+        except BaseException, e:
+            logging.error(e.message)
             return 
             
         return row
@@ -295,15 +360,16 @@ ACFUN的入口函数在这里。
             
     def checkDelete(self, comment, userID):
         #判断是否为已删除，为4则表示删除
-        if userID == 4:
+        # if userID == 4:
+        if userID == -1:
             comment.set_delete(1)
         else:
             comment.set_delete(0)
         
     def clearDB(self):
         logging.debug("clear...")
-        if os.path.getsize("/var/log/acmore.log") > 1048576:
-            os.system("> /var/log/acmore.log")
+        if os.path.getsize("run/log/acmore.log") > 1048576:
+            os.system("> run/log/acmore.log")
 
     #用来构造更多投稿的字段
     def create_more(self, rows, ac_id):
