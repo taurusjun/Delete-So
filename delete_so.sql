@@ -50,7 +50,7 @@ CREATE TABLE `accommentsinfo` (
   `type` varchar(10) NOT NULL,
   `title` tinytext NOT NULL,
   `up` tinytext NOT NULL,
-  `postTime` date NOT NULL,
+  `postTime` datetime NOT NULL,
   `url` varchar(50) NOT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 ROW_FORMAT=COMPACT;
